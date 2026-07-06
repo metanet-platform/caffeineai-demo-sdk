@@ -26,8 +26,11 @@
  * IDENTITY IS VERSION-DISCRIMINATED (V0 vs V1) — the one thing to get right:
  *   - anonymous → `{ anonymous: true, canonicalId: null }`
  *   - V0 (legacy) → `{ version: 0, wallet: {...}, canonicalId }` (root-key signed)
- *   - V1 (standard) → `{ version: 1, app: { pub }, bsv?/icp?/kda?, proofs, canonicalId }`
+ *   - V1 (standard) → `{ version: 1, app: { pub }, bsv?/icp?/kda?/content?, proofs, canonicalId }`
  *   Anchor everything on `me.canonicalId` — the ONLY field present on both versions.
+ *   Purposes are extensible: app/bsv/icp/kda/content are the core set today; future
+ *   platform versions may add more (incl. custom namespaces) and the SDK forwards
+ *   unknown purposes untouched.
  *
  * ICP BACKEND ACTOR
  *   `me.icIdentityPackage` (delivered on the connection response) is turned into a
@@ -89,11 +92,18 @@ const ALLOWED_ORIGINS = [
 ];
 
 /**
- * What we request on the identity handshake:
+ * What we request on the FIRST identity handshake:
  *  - `request: ['bsv', 'icp']` — share those purpose-scoped identities (V1);
  *    harmless on V0 (ignored). Enables BSV address + ICP principal in `me`.
+ *    Could also include 'kda' or 'content' (the pure key purpose) up front —
+ *    this demo deliberately requests them LATER via the Proofs panel to show
+ *    the incremental-connect pattern.
  *  - `proofs: ['app']`         — also mint the app ZK proof in the SAME consent
  *    overlay. On a V0 user this is simply absent (V0 has no app proof).
+ *
+ * `ninja.connect()` is RE-CALLABLE (see `requestMore` below): already-approved
+ * items resolve silently, any new item re-prompts the user with the full list.
+ * Approvals persist across visits; denials are per-visit.
  */
 const CONNECT_PARAMS: ConnectParams = {
   request: ["bsv", "icp"],
@@ -111,6 +121,14 @@ interface SDKContextValue {
   error: NinjaError | null;
   /** Tear down the client and re-run the whole bring-up (transport + identity). */
   reconnect: () => void;
+  /**
+   * Incremental consent: re-call `ninja.connect(params)` to request MORE
+   * identities/proofs later — the canonical ask-later pattern. Already-approved
+   * items resolve silently (no overlay); any NEW item re-prompts the user with
+   * the full list (approvals persist across visits; denials are per-visit).
+   * Updates `me` with the refreshed identity and resolves it.
+   */
+  requestMore: (params: ConnectParams) => Promise<ConnectResult>;
 
   // ── ICP convenience (derived from `me.icIdentityPackage`) ──────────────────
   /** ICP delegation identity for authenticated canister calls, or `null`. */
@@ -157,6 +175,25 @@ export function SDKProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<NinjaError | null>(null);
   const [icIdentity, setIcIdentity] = useState<DelegationIdentity | null>(null);
   const [actor, setActor] = useState<backendInterface | null>(null);
+
+  // ── Incremental consent: re-call ninja.connect() for MORE purposes/proofs ──
+  // The session verification key is re-published by the SDK on every connect,
+  // so the refreshed `me` is what all later responses verify against.
+  const requestMore = useCallback(
+    async (params: ConnectParams): Promise<ConnectResult> => {
+      if (!ninja) {
+        throw new NinjaError("ERR_DISCONNECTED", {
+          method: "connection",
+          hint: "requestMore called before the SDK client was built.",
+        });
+      }
+      const result = await ninja.connect(params);
+      setMe(result);
+      setStatus(result.anonymous ? "anonymous" : "connected");
+      return result;
+    },
+    [ninja],
+  );
 
   // Bumped by `reconnect()` to force the bring-up effect to run again from scratch.
   const [nonce, setNonce] = useState(0);
@@ -261,8 +298,17 @@ export function SDKProvider({ children }: { children: ReactNode }) {
   }, [icIdentity]);
 
   const value = useMemo<SDKContextValue>(
-    () => ({ ninja, status, me, error, reconnect, icIdentity, actor }),
-    [ninja, status, me, error, reconnect, icIdentity, actor],
+    () => ({
+      ninja,
+      status,
+      me,
+      error,
+      reconnect,
+      requestMore,
+      icIdentity,
+      actor,
+    }),
+    [ninja, status, me, error, reconnect, requestMore, icIdentity, actor],
   );
 
   return <SDKContext.Provider value={value}>{children}</SDKContext.Provider>;

@@ -29,6 +29,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -284,6 +285,14 @@ me.canonicalId;            // stable anchor — BOTH versions`}</Snippet>
                   value={me.icp?.principal ?? null}
                 />
                 <Field label="kda?.account" value={me.kda?.account ?? null} />
+                {/* content is the 5th core purpose: a PURE key purpose — it has a
+                    pub (+ optional proof) but NO chain address field. */}
+                <Field
+                  label="content?.pub (pure key purpose — no chain field)"
+                  value={me.content?.pub ?? null}
+                />
+                {/* Data-driven: new/unknown purposes auto-appear here (and pass
+                    through verbatim on `me` under their own key). */}
                 <Field
                   label="proofs (purposes)"
                   value={Object.keys(me.proofs ?? {}).join(", ") || null}
@@ -293,7 +302,7 @@ me.canonicalId;            // stable anchor — BOTH versions`}</Snippet>
             ) : (
               <p className="text-xs italic text-muted-foreground">
                 Guarded behind <Code>if (me.version === 1)</Code> — TypeScript
-                won't let you read <Code>bsv/icp/kda/app</Code> here.
+                won't let you read <Code>bsv/icp/kda/content/app</Code> here.
               </p>
             )}
           </div>
@@ -694,11 +703,19 @@ function FeedPanel() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
- * 5. PROOFS — proof.generate + identity.verifyProof (with V0 fallback)
+ * 5. PROOFS — proof.generate (app-proof shortcut) + identity.verifyProof
+ *             + incremental ninja.connect() for more identities/proofs
  * ══════════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * The requestable core purposes (everything but `app`, which is always shared).
+ * Core set today — future platform versions may add more, incl. custom
+ * namespaces; the SDK forwards unknown purposes untouched.
+ */
+const REQUESTABLE_PURPOSES = ["bsv", "icp", "kda", "content"] as const;
+
 function ProofsPanel() {
-  const { ninja, me } = useSDK();
+  const { ninja, me, requestMore } = useSDK();
   const [reason, setReason] = useState("gate premium feature");
   const [result, setResult] = useState<ActionResult | null>(null);
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
@@ -710,13 +727,16 @@ function ProofsPanel() {
     setResult(null);
     setVerifyMsg(null);
     try {
-      // On a V0 identity, the platform returns `app_proof_requires_v1` — we catch
-      // it and fall back to trusting the signed canonicalId from the connection.
+      // proof.generate is the APP-identity-proof shortcut: it only ever mints
+      // the `app` proof (there is no purpose param). On a V0 identity the
+      // platform returns `app_proof_requires_v1` — we catch it and fall back to
+      // trusting the signed canonicalId from the connection.
       const proof = await ninja.proof.generate({ reason });
-      setResult(okResult("Proof generated", proof));
+      setResult(okResult("App identity proof generated", proof));
 
-      // Client-side verification: reassemble a ProofEnvelope and check it binds to
-      // the user's canonicalId — no server round trip.
+      // Client-side verification: reassemble the ProofEnvelope and check it binds
+      // to the user's canonicalId — no server round trip. purpose is 'app' by
+      // definition here (that is the only proof this shortcut mints).
       if (me?.canonicalId) {
         const env: ProofEnvelope = {
           scheme: "metanet-zk-identity-v1",
@@ -754,38 +774,164 @@ function ProofsPanel() {
     }
   }, [ninja, reason, me]);
 
+  // ── Incremental consent: ninja.connect() re-called with MORE purposes ───────
+  const [identitySel, setIdentitySel] = useState<Record<string, boolean>>({});
+  const [proofSel, setProofSel] = useState<Record<string, boolean>>({});
+  const [moreBusy, setMoreBusy] = useState(false);
+  const [moreResult, setMoreResult] = useState<ActionResult | null>(null);
+
+  const selectedRequest = REQUESTABLE_PURPOSES.filter((p) => identitySel[p]);
+  const selectedProofs = REQUESTABLE_PURPOSES.filter((p) => proofSel[p]);
+
+  const askForMore = useCallback(async () => {
+    setMoreBusy(true);
+    setMoreResult(null);
+    try {
+      // ninja.connect() is re-callable — the canonical ask-later pattern.
+      // Already-approved items resolve SILENTLY (no overlay); any NEW item
+      // re-prompts the user with the full list. Approvals persist across
+      // visits; denials are per-visit. requestMore() also refreshes `me`
+      // above, so the Identity panel updates live.
+      const refreshed = await requestMore({
+        ...(selectedRequest.length > 0 ? { request: selectedRequest } : {}),
+        ...(selectedProofs.length > 0 ? { proofs: selectedProofs } : {}),
+      });
+      const shared =
+        refreshed.version === 1
+          ? REQUESTABLE_PURPOSES.filter((p) => refreshed[p] !== undefined)
+          : [];
+      const proofPurposes = refreshed.anonymous
+        ? []
+        : Object.keys((refreshed.version === 1 ? refreshed.proofs : {}) ?? {});
+      setMoreResult(
+        okResult(
+          `Connected. Shared: ${shared.join(", ") || "(none)"} · proofs: ${proofPurposes.join(", ") || "(none)"}`,
+          { request: selectedRequest, proofs: selectedProofs },
+        ),
+      );
+    } catch (e) {
+      setMoreResult(toActionResult(e));
+    } finally {
+      setMoreBusy(false);
+    }
+  }, [requestMore, selectedRequest, selectedProofs]);
+
   return (
     <Panel
       step={5}
-      title="Proofs (ZK)"
+      title="Proofs (ZK) + asking for more later"
       subtitle={
         <>
-          <Code>proof.generate</Code> mints a Groth16 proof;{" "}
-          <Code>identity.verifyProof</Code> checks it client-side. V0 →{" "}
+          <Code>proof.generate</Code> is the{" "}
+          <em>app identity proof shortcut</em>;{" "}
+          <Code>identity.verifyProof</Code> checks it client-side. All other
+          purposes: re-call <Code>ninja.connect()</Code> below. V0 →{" "}
           <Code>app_proof_requires_v1</Code> fallback.
         </>
       }
       right={<Fingerprint className="h-5 w-5 text-primary" />}
     >
-      <div className="space-y-2">
-        <Label className="text-xs">reason (shown in consent overlay)</Label>
-        <Input value={reason} onChange={(e) => setReason(e.target.value)} />
-      </div>
-      <Button
-        size="sm"
-        disabled={busy || !ninja}
-        onClick={generate}
-        className="gap-2"
-      >
-        <ShieldCheck className="h-3.5 w-3.5" /> proof.generate()
-      </Button>
-      {verifyMsg && (
-        <div className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs">
-          <BadgeCheck className="h-4 w-4 text-success" />
-          <span className="font-mono">{verifyMsg}</span>
+      {/* App identity proof (shortcut) */}
+      <div className="space-y-3 rounded-lg border border-border/60 p-3">
+        <span className="text-sm font-semibold">
+          App identity proof (shortcut)
+        </span>
+        <p className="text-xs text-muted-foreground">
+          Mints the <Code>app</Code>-purpose Groth16 proof only — there is no{" "}
+          <Code>purpose</Code> param. Requires a V1 identity.
+        </p>
+        <div className="space-y-2">
+          <Label className="text-xs">reason (shown in consent overlay)</Label>
+          <Input value={reason} onChange={(e) => setReason(e.target.value)} />
         </div>
-      )}
-      <ResultView result={result} />
+        <Button
+          size="sm"
+          disabled={busy || !ninja}
+          onClick={generate}
+          className="gap-2"
+        >
+          <ShieldCheck className="h-3.5 w-3.5" /> proof.generate({"{ reason }"})
+        </Button>
+        {verifyMsg && (
+          <div className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs">
+            <BadgeCheck className="h-4 w-4 text-success" />
+            <span className="font-mono">{verifyMsg}</span>
+          </div>
+        )}
+        <ResultView result={result} />
+      </div>
+
+      {/* Request more identities/proofs later — incremental ninja.connect() */}
+      <div className="space-y-3 rounded-lg border border-border/60 p-3">
+        <span className="text-sm font-semibold">
+          Request more identities/proofs later
+        </span>
+        <p className="text-xs text-muted-foreground">
+          <Code>ninja.connect()</Code> is re-callable — the canonical ask-later
+          pattern. Already-approved items resolve <strong>silently</strong> (no
+          overlay); any <strong>new</strong> item re-prompts the user with the
+          full list. Approvals persist across visits; denials are per-visit.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-muted-foreground">
+                <th className="py-1 pr-4 font-medium">purpose</th>
+                <th className="py-1 pr-4 font-medium">identity (request)</th>
+                <th className="py-1 font-medium">proof (proofs)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {REQUESTABLE_PURPOSES.map((p) => (
+                <tr key={p} className="border-t border-border/40">
+                  <td className="py-1.5 pr-4 font-mono">
+                    {p}
+                    {p === "content" && (
+                      <span className="ml-1 text-muted-foreground">
+                        (pure key — no chain field)
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-1.5 pr-4">
+                    <Checkbox
+                      checked={!!identitySel[p]}
+                      onCheckedChange={(v) =>
+                        setIdentitySel((s) => ({ ...s, [p]: v === true }))
+                      }
+                      aria-label={`request ${p} identity`}
+                    />
+                  </td>
+                  <td className="py-1.5">
+                    <Checkbox
+                      checked={!!proofSel[p]}
+                      onCheckedChange={(v) =>
+                        setProofSel((s) => ({ ...s, [p]: v === true }))
+                      }
+                      aria-label={`request ${p} proof`}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={
+            moreBusy ||
+            !ninja ||
+            (selectedRequest.length === 0 && selectedProofs.length === 0)
+          }
+          onClick={askForMore}
+          className="gap-2"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+          ninja.connect({"{"} request: [{selectedRequest.join(", ") || "—"}],
+          proofs: [{selectedProofs.join(", ") || "—"}] {"}"})
+        </Button>
+        <ResultView result={moreResult} />
+      </div>
     </Panel>
   );
 }
