@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.dfx/
+.env
+.env.*
+*.local
+.DS_Store
+*.log
+*.tsbuildinfo
+
+# NOTE: src/frontend/vendor/shuriken-sdk-*.tgz is intentionally committed
+# (the SDK is private/unpublished, so the demo vendors it for a self-contained install).
