@@ -64,8 +64,11 @@ export function t(code: string): string {
 export function toActionResult(err: unknown): ActionResult {
   if (isNinjaError(err)) {
     const ne = err as NinjaError;
-    // ERR_ABORTED is a user cancel, not a failure — callers render it quietly.
-    if (ne.code === "ERR_ABORTED") return { kind: "aborted" };
+    // ERR_ABORTED is the canonical user-cancel code. ERR_REJECTED is the legacy
+    // user-cancel code the create-post overlay historically emitted; both mean
+    // "the user backed out" and must render quietly, never as an error.
+    if (ne.code === "ERR_ABORTED" || ne.code === "ERR_REJECTED")
+      return { kind: "aborted" };
     return {
       kind: "error",
       code: ne.code,

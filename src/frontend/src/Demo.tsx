@@ -390,7 +390,7 @@ function PaymentsPanel() {
   );
   const [icpToken, setIcpToken] = useState("ckUSDC");
   const [icpTo, setIcpTo] = useState("");
-  const [icpAmount, setIcpAmount] = useState("1000000");
+  const [icpAmount, setIcpAmount] = useState("1.5");
   const [icpResult, setIcpResult] = useState<ActionResult | null>(null);
   const [icpBusy, setIcpBusy] = useState(false);
 
@@ -406,10 +406,11 @@ function PaymentsPanel() {
     setIcpResult(null);
     try {
       // ICP is SINGLE recipient; token is a NAME resolved via ninja.tokens.
+      // amount is a WHOLE-token decimal (e.g. 1.5 ckUSDC), NOT base units.
       const r = await ninja.pay.icp({
         token: icpToken,
         to: icpTo,
-        amount: BigInt(icpAmount || "0"),
+        amount: Number(icpAmount || "0"),
       });
       setIcpResult(okResult("ICP transfer submitted", r));
     } catch (e) {
