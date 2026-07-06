@@ -427,10 +427,21 @@ function PaymentsPanel() {
 
   const payKda = useCallback(async () => {
     if (!ninja) return;
-    setKdaBusy(true);
     setKdaResult(null);
+    // Validate locally before the round trip: Number("") is 0 and Number("abc")
+    // is NaN, both of which the platform would reject — surface it immediately.
+    const amt = Number(kdaAmount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setKdaResult({
+        kind: "error",
+        code: "ERR_VALIDATION",
+        message: "Enter a positive KDA amount.",
+      });
+      return;
+    }
+    setKdaBusy(true);
     try {
-      const r = await ninja.pay.kda({ to: kdaTo, amount: Number(kdaAmount) });
+      const r = await ninja.pay.kda({ to: kdaTo, amount: amt });
       setKdaResult(okResult("KDA transfer submitted", r));
     } catch (e) {
       setKdaResult(toActionResult(e));
@@ -919,29 +930,53 @@ function StreamsPanel() {
   // ── QR ─────────────────────────────────────────────────────────────────────
   const [scans, setScans] = useState<QrScanResult[]>([]);
   const [scanning, setScanning] = useState(false);
-  const scanSubRef = useRef<{ stop(): void } | null>(null);
+  const [scanNote, setScanNote] = useState<string | null>(null);
+  const scanSubRef = useRef<import("shuriken-sdk").Subscription | null>(null);
+  // Polls the subscription's `active` flag: the parent closes the scanner (user
+  // hits X / denies the camera → ERR_ABORTED / ERR_NO_DATA) by ending the stream,
+  // which flips `sub.active` to false WITHOUT calling our result callback. Watch
+  // it so the demo reflects the closed camera instead of showing a stuck "open".
+  const scanPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const finishScan = useCallback((note: string | null) => {
+    if (scanPollRef.current) {
+      clearInterval(scanPollRef.current);
+      scanPollRef.current = null;
+    }
+    scanSubRef.current = null;
+    setScanning(false);
+    if (note) setScanNote(note);
+  }, []);
 
   const startScan = useCallback(() => {
     if (!ninja || scanSubRef.current) return;
+    setScans([]);
+    setScanNote(null);
+    // The callback only ever fires with a valid QrScanResult ({ rawValue, parsed? }).
+    // Abort / no-data close the stream (not the callback), detected via polling below.
     const sub = ninja.qr.scan((r) =>
       setScans((prev) => [r, ...prev].slice(0, 8)),
     );
     scanSubRef.current = sub;
     setScanning(true);
-    setScans([]);
-  }, [ninja]);
+    scanPollRef.current = setInterval(() => {
+      if (!sub.active) {
+        finishScan("Scanner closed (aborted or no data).");
+      }
+    }, 300);
+  }, [ninja, finishScan]);
 
   const stopScan = useCallback(() => {
     scanSubRef.current?.stop(); // sends qr-scan-stop, releases the camera
-    scanSubRef.current = null;
-    setScanning(false);
-  }, []);
+    finishScan(null);
+  }, [finishScan]);
 
   // Always release camera + geo watcher on unmount (the classic leak these SDKs fix).
   useEffect(() => {
     return () => {
       geoStreamRef.current?.stop();
       scanSubRef.current?.stop();
+      if (scanPollRef.current) clearInterval(scanPollRef.current);
     };
   }, []);
 
@@ -992,8 +1027,14 @@ function StreamsPanel() {
           <div className="max-h-40 overflow-y-auto rounded bg-muted/40 p-2 text-xs font-mono">
             {fixes.map((f, i) => (
               <div key={`${f.timestamp}-${i}`}>
-                {f.latitude.toFixed(5)}, {f.longitude.toFixed(5)}
-                {f.accuracy ? ` ±${Math.round(f.accuracy)}m` : ""}
+                {/* Guard: a non-final heartbeat frame can arrive before the
+                    platform has a coordinate fix, so lat/lon may be absent —
+                    never call .toFixed on a possibly-undefined value. */}
+                {typeof f.latitude === "number" ? f.latitude.toFixed(5) : "?"},{" "}
+                {typeof f.longitude === "number" ? f.longitude.toFixed(5) : "?"}
+                {typeof f.accuracy === "number"
+                  ? ` ±${Math.round(f.accuracy)}m`
+                  : ""}
                 {f.isFinal ? " (final)" : ""}
               </div>
             ))}
@@ -1026,11 +1067,14 @@ function StreamsPanel() {
         {scans.length > 0 && (
           <div className="max-h-40 overflow-y-auto rounded bg-muted/40 p-2 text-xs font-mono">
             {scans.map((s, i) => (
-              <div key={`${s.rawValue}-${i}`} className="break-all">
-                {s.rawValue}
+              <div key={`${s.rawValue ?? "?"}-${i}`} className="break-all">
+                {s.rawValue ?? "(no value)"}
               </div>
             ))}
           </div>
+        )}
+        {scanNote && (
+          <p className="text-xs text-muted-foreground">{scanNote}</p>
         )}
       </div>
     </Panel>
