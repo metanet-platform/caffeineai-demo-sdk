@@ -75,7 +75,7 @@ import { type ActionResult, okResult, toActionResult } from "./lib/ninjaError";
 // A code sample string (kept as a plain constant so the `{ … }` braces read cleanly
 // without JSX escaping or a lint-flagged template literal).
 const FEED_SNIPPET =
-  "const { postId } = await ninja.feed.createPost({ headline, previewAsset: file });";
+  "const { postId } = await ninja.feed.createPost({ headline, nftDescription, previewAsset: file });";
 
 /* ══════════════════════════════════════════════════════════════════════════════
  * 1. CONNECTION STATUS — connect() (init) then ninja.connect() (identity)
@@ -626,6 +626,13 @@ function PaymentsPanel() {
 function FeedPanel() {
   const { ninja } = useSDK();
   const [headline, setHeadline] = useState("gm from shuriken-sdk");
+  // nftDescription is the post BODY — the main text of the on-chain receipt
+  // (it becomes the NINJA-TCR schema's `description`, the Timestamped Chain
+  // Receipt's canonical text). The platform's Create Post form REQUIRES it;
+  // `headline` is only the short title (the TCR `name`).
+  const [nftDescription, setNftDescription] = useState(
+    "This post was published from an embedded Metanet app via shuriken-sdk.",
+  );
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<ActionResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -638,6 +645,7 @@ function FeedPanel() {
       // The app NAME is forced platform-side; you only supply content.
       const r = await ninja.feed.createPost({
         headline,
+        nftDescription,
         ...(file ? { previewAsset: file } : {}),
       });
       setResult(okResult(`Posted · postId ${r.postId}`, r));
@@ -646,7 +654,7 @@ function FeedPanel() {
     } finally {
       setBusy(false);
     }
-  }, [ninja, headline, file]);
+  }, [ninja, headline, nftDescription, file]);
 
   return (
     <Panel
@@ -661,8 +669,17 @@ function FeedPanel() {
     >
       <Snippet>{FEED_SNIPPET}</Snippet>
       <div className="space-y-2">
-        <Label className="text-xs">headline</Label>
+        <Label className="text-xs">headline (title — the receipt's name)</Label>
         <Input value={headline} onChange={(e) => setHeadline(e.target.value)} />
+      </div>
+      <div className="space-y-2">
+        <Label className="text-xs">
+          nftDescription (body — the post's main text, required)
+        </Label>
+        <Input
+          value={nftDescription}
+          onChange={(e) => setNftDescription(e.target.value)}
+        />
       </div>
       <div className="space-y-2">
         <Label className="text-xs">previewAsset (optional File)</Label>
@@ -716,7 +733,12 @@ const REQUESTABLE_PURPOSES = ["bsv", "icp", "kda", "content"] as const;
 
 function ProofsPanel() {
   const { ninja, me, requestMore } = useSDK();
-  const [reason, setReason] = useState("gate premium feature");
+  // `reason` is a human-readable sentence the PLATFORM shows the user inside
+  // the proof-consent popover — it explains why YOUR app wants the proof. It
+  // is display-only (never on-chain, never part of the proof itself).
+  const [reason, setReason] = useState(
+    "Link your Metanet identity to your account in this app",
+  );
   const [result, setResult] = useState<ActionResult | null>(null);
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
