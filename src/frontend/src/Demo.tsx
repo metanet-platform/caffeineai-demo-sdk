@@ -825,10 +825,18 @@ function ProofsPanel() {
       const proofPurposes = refreshed.anonymous
         ? []
         : Object.keys((refreshed.version === 1 ? refreshed.proofs : {}) ?? {});
+      // Show the ACTUAL ConnectResult (not the request we sent) — the seed is
+      // masked for display; everything else is the verbatim normalized response
+      // including `.raw` (the untouched wire payload).
       setMoreResult(
         okResult(
           `Connected. Shared: ${shared.join(", ") || "(none)"} · proofs: ${proofPurposes.join(", ") || "(none)"}`,
-          { request: selectedRequest, proofs: selectedProofs },
+          {
+            ...refreshed,
+            ...(refreshed.genericUseSeed
+              ? { genericUseSeed: mask(refreshed.genericUseSeed) }
+              : {}),
+          },
         ),
       );
     } catch (e) {
